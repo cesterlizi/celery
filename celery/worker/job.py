@@ -346,6 +346,7 @@ class Request(object):
 
     def on_accepted(self, pid, time_accepted):
         """Handler called when task is accepted by worker pool."""
+        debug('on_accepted() for task %s[%s]',self.name,self.id)
         self.worker_pid = pid
         self.time_start = time_accepted
         task_accepted(self)
@@ -359,6 +360,7 @@ class Request(object):
 
     def on_timeout(self, soft, timeout):
         """Handler called if the task times out."""
+        debug('on_timeout() for task %s[%s]',self.name,self.id)
         task_ready(self)
         if soft:
             warn('Soft time limit (%ss) exceeded for %s[%s]',
@@ -372,12 +374,16 @@ class Request(object):
         if self.store_errors:
             self.task.backend.mark_as_failure(self.id, exc, request=self)
 
-        if self.task.acks_late:
-            self.acknowledge()
+#        if self.task.acks_late:
+#            self.acknowledge()
 
     def on_success(self, ret_value, now=None, nowfun=monotonic):
         """Handler called if the task was successfully processed."""
+        debug('on_sucess() for task %s[%s] return %s',
+                  self.name, self.id, repr(ret_value))
         if isinstance(ret_value, ExceptionInfo):
+            warn('on_success() for task %s[%s] with ExceptionInfo: %s',
+                self.name,self.id,repr(ret_value))
             if isinstance(ret_value.exception, (
                     SystemExit, KeyboardInterrupt)):
                 raise ret_value.exception
@@ -403,6 +409,8 @@ class Request(object):
 
     def on_retry(self, exc_info):
         """Handler called if the task should be retried."""
+        warn('on_retry(): for task %s[%s] ExceptionInfo: %s ',
+            self.name,self.id,repr(exc_info))
         if self.task.acks_late:
             self.acknowledge()
 
@@ -417,6 +425,8 @@ class Request(object):
 
     def on_failure(self, exc_info):
         """Handler called if the task raised an exception."""
+        warn('on_failure(): for task %s[%s] ExceptionInfo: %s',
+            self.name,self.id,repr(exc_info))
         task_ready(self)
         send_failed_event = True
 
@@ -425,7 +435,13 @@ class Request(object):
 
             if isinstance(exc, Retry):
                 return self.on_retry(exc_info)
-
+            
+            # Reject on worker lost or hard timeout
+            if isinstance(exc, TimeLimitExceeded) or isinstance(exc, WorkerLostError):
+                warn('reject and requeue task %s[%s] since worker was killed %s',
+                        self.name,self.id,repr(exc))
+                return self.reject(requeue=True)
+            
             # These are special cases where the process would not have had
             # time to write the result.
             if self.store_errors:
@@ -515,11 +531,13 @@ class Request(object):
 
     def acknowledge(self):
         """Acknowledge task."""
+        debug('acknowledge(): for task %s[%s]',self.name,self.id)
         if not self.acknowledged:
             self.on_ack(logger, self.connection_errors)
             self.acknowledged = True
 
     def reject(self, requeue=False):
+        warn('reject() for task %s[%s]',self.name,self.id)
         if not self.acknowledged:
             self.on_reject(logger, self.connection_errors, requeue)
             self.acknowledged = True
